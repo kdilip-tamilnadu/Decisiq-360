@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --color-bg-primary: #FFFDF8;
+    --color-text-primary: #111111;
+    --color-accent-yellow: #FFD629;
+    --color-accent-green: #10B981;
+    --color-accent-pink: #FB7185;
+    --color-accent-purple: #A855F7;
+  }
+  
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    background-color: #FFFDF8;
+    color: #111111;
+    min-height: 100vh;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+/* Neobrutalist Utility Classes */
+.shadow-neo-sm {
+  box-shadow: 2px 2px 0px 0px #000000;
+}
+
+.shadow-neo {
+  box-shadow: 3px 3px 0px 0px #000000;
+}
+
+.shadow-neo-md {
+  box-shadow: 4px 4px 0px 0px #000000;
+}
+
+.shadow-neo-lg {
+  box-shadow: 6px 6px 0px 0px #000000;
+}
+
+.shadow-neo-active {
+  box-shadow: 1px 1px 0px 0px #000000;
+}
+
+/* Custom crisp scrollbars */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: #FFFDF8;
+  border-left: 1px solid #E5E5E5;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #111111;
+  border-radius: 0px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #FFD629;
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Decisiq 360",
+  "description": "360° Decision Intelligence for Financial Decisions — Four Independent Intelligence Engines with Offline-First Architecture",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
