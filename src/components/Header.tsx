@@ -1,17 +1,19 @@
-import React from 'react';
 import {
   Sliders,
   Search,
   Sparkles,
   LayoutDashboard,
   ArrowLeft,
+  Activity,
+  ScrollText,
 } from 'lucide-react';
 import { ModuleType } from '../types/index.ts';
 
 interface HeaderProps {
   activeView: ModuleType | 'home' | 'executive';
   onSelectView: (view: ModuleType | 'home' | 'executive') => void;
-  onOpenAudit?: () => void;
+  onOpenAudit: () => void;
+  onOpenSystemHealth: () => void;
   onOpenDataManagement: () => void;
   onOpenSearch: () => void;
   onOpenSupport: () => void;
@@ -21,7 +23,8 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   activeView,
   onSelectView,
-  onOpenAudit: _onOpenAudit,
+  onOpenAudit,
+  onOpenSystemHealth,
   onOpenDataManagement,
   onOpenSearch,
   onOpenSupport,
@@ -85,6 +88,27 @@ export const Header: React.FC<HeaderProps> = ({
             {totalRuns > 0 && (
               <span className="w-2 h-2 rounded-full bg-emerald-500 border border-black" />
             )}
+          </button>
+
+          <button
+            onClick={onOpenSystemHealth}
+            className="h-10 px-2.5 sm:px-3 rounded-xl bg-white hover:bg-neutral-50 border-2 border-black flex items-center gap-1.5 text-xs font-black text-black shadow-neo-sm hover:shadow-neo hover:-translate-x-0.5 hover:-translate-y-0.5 active:shadow-neo-active active:translate-x-0 active:translate-y-0 transition-all focus:outline-none"
+            title="System Health & Performance Profiler"
+            aria-label="System Health"
+          >
+            <Activity className="w-3.5 h-3.5 stroke-[2.2] text-emerald-600" />
+            <span className="hidden lg:inline">Health</span>
+            <span className="w-2 h-2 rounded-full bg-emerald-500 border border-black animate-pulse" />
+          </button>
+
+          <button
+            onClick={onOpenAudit}
+            className="h-10 px-2.5 sm:px-3 rounded-xl bg-white hover:bg-neutral-50 border-2 border-black flex items-center gap-1.5 text-xs font-black text-black shadow-neo-sm hover:shadow-neo hover:-translate-x-0.5 hover:-translate-y-0.5 active:shadow-neo-active active:translate-x-0 active:translate-y-0 transition-all focus:outline-none"
+            title="Immutable System Audit Trail & Telemetry"
+            aria-label="Audit Trail"
+          >
+            <ScrollText className="w-3.5 h-3.5 stroke-[2.2]" />
+            <span className="hidden sm:inline">Audit</span>
           </button>
 
           <button

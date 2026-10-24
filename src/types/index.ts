@@ -50,6 +50,19 @@ export interface ReviewAction {
   timestamp: string;
 }
 
+export interface AuditEventPerformance {
+  executionTimeMs?: number;
+  memoryImpactBytes?: number;
+  memoryImpactFormatted?: string;
+  heapUsedBytes?: number;
+  throughputRowsPerSec?: number;
+  rowCount?: number;
+  engineStatus?: 'OPTIMAL' | 'ACCEPTABLE' | 'DEGRADED';
+  percentile?: number;
+  percentileThresholdMs?: number;
+  isAlert?: boolean;
+}
+
 export interface AuditEvent {
   id: string;
   timestamp: string;
@@ -60,11 +73,14 @@ export interface AuditEvent {
     | 'SCENARIO_EXECUTED'
     | 'POLICY_EVALUATED'
     | 'DATA_EXPORTED'
-    | 'DATA_CLEARED';
+    | 'DATA_CLEARED'
+    | 'PERFORMANCE_BENCHMARK'
+    | 'PERFORMANCE_ALERT';
   module?: ModuleType;
   runId?: string;
   details: string;
   metadata?: Record<string, any>;
+  performance?: AuditEventPerformance;
 }
 
 export interface UploadedFileMetadata {
@@ -76,6 +92,15 @@ export interface UploadedFileMetadata {
   rowCount: number;
   detectedFormat: 'csv' | 'xlsx' | 'json';
   sourceRole?: string; // e.g. 'source_a' (bank) vs 'source_b' (ledger), or 'applications' vs 'policy'
+}
+
+export interface RunPerformanceMetrics {
+  executionTimeMs: number;
+  memoryDeltaBytes?: number;
+  memoryDeltaFormatted?: string;
+  totalPayloadBytes?: number;
+  throughputRowsPerSec?: number;
+  peakHeapBytes?: number;
 }
 
 export interface AnalysisRunMetadata {
@@ -94,6 +119,7 @@ export interface AnalysisRunMetadata {
     total: number;
   };
   summary: Record<string, any>;
+  performanceMetrics?: RunPerformanceMetrics;
 }
 
 /* -------------------------------------------------------------

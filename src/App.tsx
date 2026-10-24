@@ -23,12 +23,18 @@ import { AgentDrawer } from './components/AgentDrawer.tsx';
 import { ExportModal } from './components/ExportModal.tsx';
 import { QuickStatsBanner } from './components/QuickStatsBanner.tsx';
 import { AuditLogModal } from './components/AuditLogModal.tsx';
+import { SystemHealthModal } from './components/SystemHealthModal.tsx';
 import { DataManagementModal } from './components/DataManagementModal.tsx';
 import { ClearConfirmationModal } from './components/ClearConfirmationModal.tsx';
 import { GlobalSearchModal } from './components/GlobalSearchModal.tsx';
 import { SupportAssistantModal } from './components/SupportAssistantModal.tsx';
 
 import { parseUploadedFile, generateId } from './utils/fileParser.ts';
+import {
+  estimateObjectBytes,
+  formatBytes,
+  checkPercentileExecutionDiagnostic,
+} from './utils/performance.ts';
 import {
   getSavedRuns,
   saveRunMetadata,
@@ -62,7 +68,7 @@ import {
   generateCloseInvestigation,
 } from './engines/agents.ts';
 
-import { ArrowLeft, Clock, AlertCircle, CheckCircle2, X, Trash2 } from 'lucide-react';
+import { ArrowLeft, Clock, AlertCircle, AlertTriangle, CheckCircle2, X, Trash2 } from 'lucide-react';
 
 const MODULE_ACCENT: Record<ModuleType, { bg: string; label: string }> = {
   reconciliation: { bg: 'bg-[#FFD629]', label: 'Module 01' },
@@ -114,6 +120,7 @@ export default function App() {
   const [activeInvestigation, setActiveInvestigation] = useState<AgentInvestigationResult | null>(null);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isAuditOpen, setIsAuditOpen] = useState(false);
+  const [isSystemHealthOpen, setIsSystemHealthOpen] = useState(false);
   const [isDataManagementOpen, setIsDataManagementOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isSupportOpen, setIsSupportOpen] = useState(false);
@@ -158,12 +165,54 @@ export default function App() {
     close: runs.filter((r) => r.module === 'close').length,
   };
 
+  // Diagnostic Performance Alert warning notification state
+  const [performanceWarning, setPerformanceWarning] = useState<{
+    module: ModuleType;
+    message: string;
+    executionTimeMs: number;
+    p95ThresholdMs: number;
+  } | null>(null);
+
+  const runDiagnosticLatencyCheck = (
+    moduleType: ModuleType,
+    rId: string,
+    execMs: number,
+    rCount: number,
+    memBytes: number
+  ) => {
+    const diagnostic = checkPercentileExecutionDiagnostic(
+      {
+        id: rId,
+        module: moduleType,
+        executionTimeMs: execMs,
+        rowCount: rCount,
+        memoryDeltaBytes: memBytes,
+      },
+      runs,
+      {
+        onWarningNotification: (alert) => {
+          setPerformanceWarning({
+            module: alert.module,
+            message: alert.warningMessage,
+            executionTimeMs: alert.executionTimeMs,
+            p95ThresholdMs: alert.p95ThresholdMs,
+          });
+        },
+      }
+    );
+
+    if (diagnostic.triggered && diagnostic.auditEvent) {
+      logAuditEvent(diagnostic.auditEvent);
+    }
+  };
+
   // Pipeline execution for uploaded files
   const handleFilesSubmitted = async (files: { fileA: File; fileB?: File }) => {
     if (activeView === 'home' || activeView === 'executive') return;
 
     const currentGen = ++processingGenerations.current[activeView];
     setClearSuccessMessage(null);
+    setPerformanceWarning(null);
     setIsProcessing(true);
     setErrorMessage(null);
     setModuleFiles((prev) => ({
@@ -171,6 +220,7 @@ export default function App() {
       [activeView]: { fileA: files.fileA, fileB: files.fileB || null },
     }));
     const startTime = performance.now();
+    const startHeap = (performance as any)?.memory?.usedJSHeapSize || 0;
     const runId = generateId(`run_${activeView}`);
 
     try {
@@ -210,6 +260,13 @@ export default function App() {
         const recordsB = normalizeReconRows(parsedB.rows, parsedB.fileId, parsedB.fileName, 'source_b');
         const result = executeReconciliation(recordsA, recordsB, undefined, runId);
 
+        const executionTimeMs = Math.max(1, Math.round(performance.now() - startTime));
+        const endHeap = (performance as any)?.memory?.usedJSHeapSize || 0;
+        const payloadBytes = estimateObjectBytes(result);
+        const memoryDeltaBytes = endHeap > startHeap ? endHeap - startHeap : payloadBytes;
+        const totalRows = (parsedA?.totalRows || 0) + (parsedB?.totalRows || 0);
+        const throughputRowsPerSec = Math.round((totalRows / executionTimeMs) * 1000);
+
         saveReconResult(result);
         setReconResult(result);
 
@@ -218,7 +275,7 @@ export default function App() {
           module: 'reconciliation',
           engineVersion: result.engineVersion,
           createdAt: new Date().toISOString(),
-          executionTimeMs: Math.round(performance.now() - startTime),
+          executionTimeMs,
           status: 'success',
           inputFiles: [
             {
@@ -254,6 +311,14 @@ export default function App() {
             matchedCount: result.matchedCount,
             netVariance: result.netResidualAmount,
           },
+          performanceMetrics: {
+            executionTimeMs,
+            memoryDeltaBytes,
+            memoryDeltaFormatted: formatBytes(memoryDeltaBytes),
+            totalPayloadBytes: payloadBytes,
+            throughputRowsPerSec,
+            peakHeapBytes: endHeap,
+          },
         };
 
         saveRunMetadata(runMeta);
@@ -266,11 +331,28 @@ export default function App() {
           runId,
           details: `Reconciliation completed: ${result.reconciliationRatePercent}% matched across ${
             result.totalRecordsA + result.totalRecordsB
-          } items. ${result.findings.length} finding(s) generated.`,
+          } items in ${executionTimeMs}ms. ${result.findings.length} finding(s) generated.`,
+          performance: {
+            executionTimeMs,
+            memoryImpactBytes: memoryDeltaBytes,
+            memoryImpactFormatted: formatBytes(memoryDeltaBytes),
+            heapUsedBytes: endHeap,
+            throughputRowsPerSec,
+            rowCount: totalRows,
+            engineStatus: executionTimeMs < 100 ? 'OPTIMAL' : executionTimeMs < 500 ? 'ACCEPTABLE' : 'DEGRADED',
+          },
         });
+
+        runDiagnosticLatencyCheck('reconciliation', runId, executionTimeMs, totalRows, memoryDeltaBytes);
       } else if (activeView === 'decision') {
         const apps = normalizeDecisionRows(parsedA.rows, parsedA.fileId, parsedA.fileName);
         const result = executeDecisionEngine(apps, undefined, runId);
+        const executionTimeMs = Math.max(1, Math.round(performance.now() - startTime));
+        const endHeap = (performance as any)?.memory?.usedJSHeapSize || 0;
+        const payloadBytes = estimateObjectBytes(result);
+        const memoryDeltaBytes = endHeap > startHeap ? endHeap - startHeap : payloadBytes;
+        const totalRows = parsedA?.totalRows || 0;
+        const throughputRowsPerSec = Math.round((totalRows / executionTimeMs) * 1000);
 
         saveDecisionResult(result);
         setDecisionResult(result);
@@ -280,7 +362,7 @@ export default function App() {
           module: 'decision',
           engineVersion: result.engineVersion,
           createdAt: new Date().toISOString(),
-          executionTimeMs: Math.round(performance.now() - startTime),
+          executionTimeMs,
           status: 'success',
           inputFiles: [
             {
@@ -305,6 +387,14 @@ export default function App() {
             conflicts: result.conflictingDecisionsCount,
             computedPasses: result.computedPasses,
           },
+          performanceMetrics: {
+            executionTimeMs,
+            memoryDeltaBytes,
+            memoryDeltaFormatted: formatBytes(memoryDeltaBytes),
+            totalPayloadBytes: payloadBytes,
+            throughputRowsPerSec,
+            peakHeapBytes: endHeap,
+          },
         };
 
         saveRunMetadata(runMeta);
@@ -315,8 +405,19 @@ export default function App() {
           actionType: 'ANALYSIS_RUN',
           module: 'decision',
           runId,
-          details: `Decision auditing completed: ${result.totalApplications} application(s) evaluated. ${result.conflictingDecisionsCount} policy conflict(s) detected.`,
+          details: `Decision auditing completed: ${result.totalApplications} application(s) evaluated in ${executionTimeMs}ms. ${result.conflictingDecisionsCount} policy conflict(s) detected.`,
+          performance: {
+            executionTimeMs,
+            memoryImpactBytes: memoryDeltaBytes,
+            memoryImpactFormatted: formatBytes(memoryDeltaBytes),
+            heapUsedBytes: endHeap,
+            throughputRowsPerSec,
+            rowCount: totalRows,
+            engineStatus: executionTimeMs < 100 ? 'OPTIMAL' : executionTimeMs < 500 ? 'ACCEPTABLE' : 'DEGRADED',
+          },
         });
+
+        runDiagnosticLatencyCheck('decision', runId, executionTimeMs, totalRows, memoryDeltaBytes);
       } else if (activeView === 'risk') {
         const positions = normalizeRiskRows(parsedA.rows, parsedA.fileId, parsedA.fileName, 'TREASURY');
         let secondaryPositions: any[] | undefined = undefined;
@@ -325,6 +426,13 @@ export default function App() {
         }
 
         const result = executeRiskEngine(positions, secondaryPositions, undefined, runId);
+        const executionTimeMs = Math.max(1, Math.round(performance.now() - startTime));
+        const endHeap = (performance as any)?.memory?.usedJSHeapSize || 0;
+        const payloadBytes = estimateObjectBytes(result);
+        const memoryDeltaBytes = endHeap > startHeap ? endHeap - startHeap : payloadBytes;
+        const totalRows = (parsedA?.totalRows || 0) + (parsedB?.totalRows || 0);
+        const throughputRowsPerSec = Math.round((totalRows / executionTimeMs) * 1000);
+
         saveRiskResult(result);
         setRiskResult(result);
 
@@ -333,7 +441,7 @@ export default function App() {
           module: 'risk',
           engineVersion: result.engineVersion,
           createdAt: new Date().toISOString(),
-          executionTimeMs: Math.round(performance.now() - startTime),
+          executionTimeMs,
           status: 'success',
           inputFiles: [
             {
@@ -358,6 +466,14 @@ export default function App() {
             breaches: result.activeBreachesCount,
             topConcentration: result.topConcentrations[0]?.shareOfTotalPercent || 0,
           },
+          performanceMetrics: {
+            executionTimeMs,
+            memoryDeltaBytes,
+            memoryDeltaFormatted: formatBytes(memoryDeltaBytes),
+            totalPayloadBytes: payloadBytes,
+            throughputRowsPerSec,
+            peakHeapBytes: endHeap,
+          },
         };
 
         saveRunMetadata(runMeta);
@@ -368,11 +484,29 @@ export default function App() {
           actionType: 'ANALYSIS_RUN',
           module: 'risk',
           runId,
-          details: `Risk monitoring completed: $${result.totalGrossExposure.toLocaleString()} gross exposure analyzed. ${result.activeBreachesCount} limit breach(es).`,
+          details: `Risk monitoring completed: $${result.totalGrossExposure.toLocaleString()} gross exposure analyzed in ${executionTimeMs}ms. ${result.activeBreachesCount} limit breach(es).`,
+          performance: {
+            executionTimeMs,
+            memoryImpactBytes: memoryDeltaBytes,
+            memoryImpactFormatted: formatBytes(memoryDeltaBytes),
+            heapUsedBytes: endHeap,
+            throughputRowsPerSec,
+            rowCount: totalRows,
+            engineStatus: executionTimeMs < 100 ? 'OPTIMAL' : executionTimeMs < 500 ? 'ACCEPTABLE' : 'DEGRADED',
+          },
         });
+
+        runDiagnosticLatencyCheck('risk', runId, executionTimeMs, totalRows, memoryDeltaBytes);
       } else if (activeView === 'close') {
         const tasks = normalizeCloseRows(parsedA.rows, parsedA.fileId, parsedA.fileName);
         const result = executeCloseEngine(tasks, runId);
+        const executionTimeMs = Math.max(1, Math.round(performance.now() - startTime));
+        const endHeap = (performance as any)?.memory?.usedJSHeapSize || 0;
+        const payloadBytes = estimateObjectBytes(result);
+        const memoryDeltaBytes = endHeap > startHeap ? endHeap - startHeap : payloadBytes;
+        const totalRows = parsedA?.totalRows || 0;
+        const throughputRowsPerSec = Math.round((totalRows / executionTimeMs) * 1000);
+
         saveCloseResult(result);
         setCloseResult(result);
 
@@ -381,7 +515,7 @@ export default function App() {
           module: 'close',
           engineVersion: result.engineVersion,
           createdAt: new Date().toISOString(),
-          executionTimeMs: Math.round(performance.now() - startTime),
+          executionTimeMs,
           status: 'success',
           inputFiles: [
             {
@@ -406,6 +540,14 @@ export default function App() {
             completionRate: result.completionRatePercent,
             criticalPathHours: result.totalProjectDurationHours,
           },
+          performanceMetrics: {
+            executionTimeMs,
+            memoryDeltaBytes,
+            memoryDeltaFormatted: formatBytes(memoryDeltaBytes),
+            totalPayloadBytes: payloadBytes,
+            throughputRowsPerSec,
+            peakHeapBytes: endHeap,
+          },
         };
 
         saveRunMetadata(runMeta);
@@ -416,8 +558,19 @@ export default function App() {
           actionType: 'ANALYSIS_RUN',
           module: 'close',
           runId,
-          details: `Close scheduling completed: ${result.completionRatePercent}% complete. Critical path is ${result.totalProjectDurationHours} hours.`,
+          details: `Close scheduling completed: ${result.completionRatePercent}% complete in ${executionTimeMs}ms. Critical path is ${result.totalProjectDurationHours} hours.`,
+          performance: {
+            executionTimeMs,
+            memoryImpactBytes: memoryDeltaBytes,
+            memoryImpactFormatted: formatBytes(memoryDeltaBytes),
+            heapUsedBytes: endHeap,
+            throughputRowsPerSec,
+            rowCount: totalRows,
+            engineStatus: executionTimeMs < 100 ? 'OPTIMAL' : executionTimeMs < 500 ? 'ACCEPTABLE' : 'DEGRADED',
+          },
         });
+
+        runDiagnosticLatencyCheck('close', runId, executionTimeMs, totalRows, memoryDeltaBytes);
       }
     } catch (err: any) {
       console.error('Processing error:', err);
@@ -592,8 +745,10 @@ export default function App() {
           setActiveView(v);
           setErrorMessage(null);
           setClearSuccessMessage(null);
+          setPerformanceWarning(null);
         }}
         onOpenAudit={() => setIsAuditOpen(true)}
+        onOpenSystemHealth={() => setIsSystemHealthOpen(true)}
         onOpenDataManagement={() => setIsDataManagementOpen(true)}
         onOpenSearch={() => setIsSearchOpen(true)}
         onOpenSupport={() => setIsSupportOpen(true)}
@@ -608,6 +763,7 @@ export default function App() {
               setActiveView(m);
               setErrorMessage(null);
               setClearSuccessMessage(null);
+              setPerformanceWarning(null);
             }}
             activeRunCounts={runCounts}
           />
@@ -751,6 +907,54 @@ export default function App() {
               </div>
             )}
 
+            {/* Performance Alert Warning Notification */}
+            {performanceWarning && performanceWarning.module === activeView && (
+              <div className="p-4 rounded-xl bg-amber-50 border-2 border-black text-amber-950 text-xs font-bold flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-neo-sm animate-in fade-in duration-200">
+                <div className="flex items-center gap-2.5">
+                  <span className="w-8 h-8 rounded-lg bg-[#FFD629] border border-black flex items-center justify-center text-black shrink-0 shadow-neo-sm">
+                    <AlertTriangle className="w-4 h-4 stroke-[2.5] text-amber-800" />
+                  </span>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2 py-0.5 rounded border border-black text-[10px] font-black uppercase bg-[#F59E0B] text-black shadow-neo-sm">
+                        Performance Alert
+                      </span>
+                      <span className="font-mono text-black">
+                        Execution: <strong>{performanceWarning.executionTimeMs} ms</strong> &gt; 95th Percentile Threshold (<strong>{performanceWarning.p95ThresholdMs} ms</strong>)
+                      </span>
+                    </div>
+                    <p className="text-[11px] font-semibold text-neutral-700 mt-1">
+                      {performanceWarning.message} This event has been recorded in the immutable audit log as a 'Performance Alert'.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setIsAuditOpen(true)}
+                    className="px-2.5 py-1 rounded-lg bg-white hover:bg-neutral-100 text-black border border-black text-[11px] font-black transition shadow-neo-sm hover:shadow-neo hover:-translate-x-0.5 hover:-translate-y-0.5"
+                  >
+                    View in Audit Log
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsSystemHealthOpen(true)}
+                    className="px-2.5 py-1 rounded-lg bg-[#FFD629] hover:bg-[#ffe066] text-black border border-black text-[11px] font-black transition shadow-neo-sm hover:shadow-neo hover:-translate-x-0.5 hover:-translate-y-0.5"
+                  >
+                    System Health
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPerformanceWarning(null)}
+                    className="text-black hover:bg-black/10 p-1 rounded-lg transition ml-1"
+                    aria-label="Dismiss warning"
+                  >
+                    <X className="w-3.5 h-3.5 stroke-[2.5]" />
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Quick Stats Performance Banner */}
             <QuickStatsBanner
               module={activeView}
@@ -878,6 +1082,22 @@ export default function App() {
         <AuditLogModal
           events={getAuditEvents()}
           onClose={() => setIsAuditOpen(false)}
+          onOpenSystemHealth={() => {
+            setIsAuditOpen(false);
+            setIsSystemHealthOpen(true);
+          }}
+        />
+      )}
+
+      {isSystemHealthOpen && (
+        <SystemHealthModal
+          runs={runs}
+          auditEvents={getAuditEvents()}
+          onClose={() => setIsSystemHealthOpen(false)}
+          onOpenAuditLog={() => {
+            setIsSystemHealthOpen(false);
+            setIsAuditOpen(true);
+          }}
         />
       )}
 
